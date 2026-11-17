@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ERC4626} from "openzeppelin-contracts/token/ERC20/extensions/ERC4626.sol";
 import {UnstakingShMonVault, IUnstaker} from "../src/UnstakingShMonVault.sol";
+import {_ops} from "./UnstakingShMonVault.t.sol";
 
 interface IShMonadLive {
     function deposit(uint256 assets, address receiver) external payable returns (uint256);
@@ -32,7 +33,7 @@ contract UnstakingShMonVaultForkTest is Test {
         if (bytes(rpc).length == 0) return;
         vm.createSelectFork(rpc);
         forked = true;
-        vault = new UnstakingShMonVault(EVC, SHMON, SHMON, WMON, operator);
+        vault = new UnstakingShMonVault(EVC, SHMON, SHMON, WMON, _ops(operator));
         vm.deal(operator, 1_000 ether);
         vm.deal(outsider, 1_000 ether);
     }

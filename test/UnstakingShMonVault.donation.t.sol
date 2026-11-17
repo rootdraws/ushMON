@@ -5,7 +5,7 @@ import {Test, console2} from "forge-std/Test.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {EthereumVaultConnector} from "ethereum-vault-connector/EthereumVaultConnector.sol";
 import {UnstakingShMonVault} from "../src/UnstakingShMonVault.sol";
-import {MockShMon, MockWmon, MockController} from "./UnstakingShMonVault.t.sol";
+import {MockShMon, MockWmon, MockController, _ops} from "./UnstakingShMonVault.t.sol";
 
 /// @notice Issue 10 study (Root, 2026-11-16: "run a handful of tests first, like 20-50 tests. See what happens under
 ///         different conditions."): tokens sent straight to the vault move its share price at once because totalAssets
@@ -31,7 +31,7 @@ contract UnstakingShMonVaultDonationTest is Test {
         shMon = new MockShMon(WAIT);
         vm.deal(address(shMon), 1e30);
         wmon = new MockWmon();
-        vault = new UnstakingShMonVault(address(evc), address(shMon), address(shMon), address(wmon), desk);
+        vault = new UnstakingShMonVault(address(evc), address(shMon), address(shMon), address(wmon), _ops(desk));
         shMon.mint(desk, 100 * X);
         shMon.mint(donor, 100_000 * X);
         vm.deal(donor, 1e30);

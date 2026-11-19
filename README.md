@@ -39,18 +39,24 @@ The fork test matures an unstake by writing shMonad's epoch (storage slot 18, lo
   (`sharedWmon`). `redeemForWmon` pays at most `wmonRedeemable(owner)`. Shares stay one pot, priced pro rata, so a
   desk holding shMON earns a little of the yield the other desk's unstaking MON does not (about 3 bps a day on the
   unstaking part at today's rate).
+- v4 (2026-11-18, Root: "yes, build the ushMON fix"): the WMON follows the shares. A transfer, such as a liquidation's
+  seizure, moves the same share of the sender's WMON credit and pending unstakes to the receiver, so a liquidator can
+  redeem the WMON behind the shares it took. A holder's matured unstakes wait in a reserved pot until it claims them
+  (`claimUnstaked`, or inside `redeemForWmon`), so many small holders cannot make `completeUnstake` too costly.
+  Tests: `test/UnstakingShMonVaultV4.t.sol`.
 
 ## Deployed on Monad
 
-v3, deployed 2026-11-17 by `ag-euler/contracts/shmon-cluster-monad/deploy.sh desks`: one vault for both exit desks. The
-cluster's router `0x99f7105CAC565Ac830cf2d66527FBb06dD322C32` resolves it to shMON and the WMON vault
-`0xE4522663752AC47516e39aD11d3780a116850eaf` lends 93% against it and liquidates at 95%. Verified on Monadscan.
+v4, deployed 2026-11-18: one vault for both exit desks. The cluster's router
+`0x99f7105CAC565Ac830cf2d66527FBb06dD322C32` resolves it to shMON, and the WMON vault
+`0xE4522663752AC47516e39aD11d3780a116850eaf` lends 93% against it and liquidates at 95%. The deployed code matches this
+source, apart from constructor values and metadata (checked 2026-11-19).
 
 | vault | address | operators (exit desks) |
 | --- | --- | --- |
-| ushMON v3 | `0x37e07473F1F62CB071Db57440e242b320614A0ce` | `0x02Df7fb3b4535361EE10C391e3bDDAEe9001c770` (Delta One), `0xF460C4C68704Da32Ba3cefC2feEcaA3C3f3d6CdE` (Delta Neutral) |
+| ushMON v4 | `0xa753E24B0986567EDAd75f784664Ec11336f8C5e` | `0x02Df7fb3b4535361EE10C391e3bDDAEe9001c770` (Delta One), `0xF460C4C68704Da32Ba3cefC2feEcaA3C3f3d6CdE` (Delta Neutral) |
 
-Replaced, now empty: v2 `0xC8f5023512c0618B754e03d675E3626a4A760092` and `0xa2F34235e4C3c0706B2d5B9170F924446b1Df664`
+Replaced, now empty: v3 `0x37e07473F1F62CB071Db57440e242b320614A0ce` (2026-11-17, retired 2026-11-18); v2 `0xC8f5023512c0618B754e03d675E3626a4A760092` and `0xa2F34235e4C3c0706B2d5B9170F924446b1Df664`
 (2026-11-16, one per desk); v1 `0xa44220Ee57Cb879bd842a24696Df06e398601d8F` and `0x066E1eb375369A00e324cF18Eb014B9AB0507690`
 (open deposit); `0x59f7f897322D5FdEFCa38beB78137559eD985F80` and `0xc0CA1086131046766956bBD030fe9595Cc8204a1` on the older
 eWMON-14 setup.

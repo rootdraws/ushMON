@@ -47,6 +47,11 @@ interface IWMON {
 ///         are kept on its own ledger, and the WMON that comes back from them is credited to that operator alone, so
 ///         one desk can never redeem the WMON another desk's unstake produced. MON that reaches the vault outside a
 ///         ledger entry (issue 3's stray MON, or WMON sent straight in) is credited to every holder pro rata.
+///         v4 (2026-11-18, Root: "yes, build the ushMON fix"): the WMON follows the shares. A transfer (a liquidation's
+///         seizure) moves the same fraction of the sender's credit and of each of its pending unstakes to the receiver,
+///         so a liquidator can redeem the WMON behind the shares it took. A non-operator's matured unstakes are paid from
+///         a pot completeUnstake reserves for them and claimed one holder at a time (claimUnstaked, or inside
+///         redeemForWmon), so no number of holders can make completeUnstake too costly for the desks to call.
 contract UnstakingShMonVault is EVCUtil, ERC4626 {
     using Math for uint256;
     using SafeERC20 for IERC20;
@@ -54,6 +59,8 @@ contract UnstakingShMonVault is EVCUtil, ERC4626 {
     uint256 internal constant VIRTUAL_AMOUNT = 1e6;
     /// @dev The pro-rata pot of WMON no operator's ledger produced
     address internal constant SHARED = address(0);
+    /// @dev v4: WMON reserved for non-operators' matured unstakes, claimed by each holder
+    address internal constant HOLDERS = address(1);
 
     struct Pending {
         uint128 amountMon;
@@ -73,6 +80,8 @@ contract UnstakingShMonVault is EVCUtil, ERC4626 {
     /// @notice Every credit added up: WMON the vault holds beyond it is not yet anyone's and is credited on the next
     ///         completeUnstake
     uint256 public creditTotal;
+    /// @notice v4: MON still owed on non-operators' ledgers (entries a transfer moved to them), matured or not
+    uint256 public holderPending;
 
     event UnstakeStarted(address indexed operator, uint256 shares, uint256 amountMon, uint64 completionEpoch);
     event UnstakeCompleted(uint256 mon);
@@ -80,6 +89,8 @@ contract UnstakingShMonVault is EVCUtil, ERC4626 {
     event WmonCredited(address indexed operator, uint256 wmon);
     /// @notice A redemption paid in WMON (issue 11): indexers that follow Deposit and Withdraw see these too
     event RedeemedForWmon(address indexed caller, address indexed receiver, address indexed owner, uint256 shares, uint256 wmon);
+    /// @notice v4: a transfer moved part of the sender's WMON credit and pending unstakes to the receiver
+    event ClaimMoved(address indexed from, address indexed to, uint256 wmonCredit, uint256 pendingMon);
 
     error NotOperator();
     error NoOperators();
@@ -163,7 +174,18 @@ contract UnstakingShMonVault is EVCUtil, ERC4626 {
     function wmonRedeemable(address owner) public view returns (uint256) {
         uint256 supply = totalSupply();
         uint256 shared = supply == 0 ? 0 : sharedWmon().mulDiv(balanceOf(owner), supply);
-        return wmonCredit[owner] + shared;
+        return wmonCredit[owner] + shared + _claimable(owner);
+    }
+
+    /// @notice v4: a non-operator's matured unstakes the reserved pot can pay now, not yet moved to its credit
+    function _claimable(address holder) internal view returns (uint256 total) {
+        if (isOperator[holder]) return 0;
+        uint64 epoch = unstaker.getInternalEpoch();
+        uint256 pot = wmonCredit[HOLDERS];
+        Pending[] storage l = _ledger[holder];
+        for (uint256 i = 0; i < l.length; i++) {
+            if (l[i].completionEpoch <= epoch && total + l[i].amountMon <= pot) total += l[i].amountMon;
+        }
     }
 
     /// @notice Shares the owner can redeem for WMON now: 0 while a controller may veto, else the fewer of the owner's
@@ -231,7 +253,68 @@ contract UnstakingShMonVault is EVCUtil, ERC4626 {
             _credit(op, paid);
             fresh -= paid;
         }
+        // v4: non-operators' unstakes come back with the rest; their part waits in the holders' pot to be claimed
+        uint256 owed = holderPending > wmonCredit[HOLDERS] ? holderPending - wmonCredit[HOLDERS] : 0;
+        uint256 reserve = Math.min(fresh, owed);
+        if (reserve > 0) {
+            _credit(HOLDERS, reserve);
+            fresh -= reserve;
+        }
         if (fresh > 0) _credit(SHARED, fresh);
+    }
+
+    /// @notice v4: moves a non-operator's matured unstakes from the holders' pot to its own credit (anyone may call)
+    function claimUnstaked(address holder) public returns (uint256 claimed) {
+        if (isOperator[holder]) return 0;
+        uint64 epoch = unstaker.getInternalEpoch();
+        Pending[] storage l = _ledger[holder];
+        uint256 i = 0;
+        while (i < l.length) {
+            uint256 a = l[i].amountMon;
+            if (l[i].completionEpoch <= epoch && a <= wmonCredit[HOLDERS]) {
+                wmonCredit[HOLDERS] -= a;
+                wmonCredit[holder] += a;
+                holderPending -= a;
+                claimed += a;
+                l[i] = l[l.length - 1];
+                l.pop();
+            } else {
+                i++;
+            }
+        }
+        if (claimed > 0) emit WmonCredited(holder, claimed);
+    }
+
+    /// @notice v4: a transfer between holders carries the same fraction of the sender's WMON credit and of each of its
+    ///         pending unstakes, so the receiver can redeem the WMON behind the shares (a liquidation's seizure).
+    ///         Rounding dust stays with the sender. Mint and burn are untouched.
+    function _update(address from, address to, uint256 value) internal override {
+        if (from != address(0) && to != address(0) && from != to && value > 0) {
+            uint256 bal = balanceOf(from);
+            if (bal > 0) {
+                uint256 c = wmonCredit[from].mulDiv(value, bal);
+                if (c > 0) {
+                    wmonCredit[from] -= c;
+                    wmonCredit[to] += c;
+                }
+                Pending[] storage l = _ledger[from];
+                uint256 moved;
+                for (uint256 i = 0; i < l.length; i++) {
+                    uint256 part = uint256(l[i].amountMon).mulDiv(value, bal);
+                    if (part == 0) continue;
+                    l[i].amountMon -= uint128(part);
+                    _ledger[to].push(Pending(uint128(part), l[i].completionEpoch));
+                    moved += part;
+                }
+                // operators' ledgers are paid by completeUnstake itself; everyone else's from the holders' pot
+                if (moved > 0) {
+                    if (!isOperator[from]) holderPending -= moved;
+                    if (!isOperator[to]) holderPending += moved;
+                }
+                if (c > 0 || moved > 0) emit ClaimMoved(from, to, c, moved);
+            }
+        }
+        super._update(from, to, value);
     }
 
     function _credit(address op, uint256 amount) internal {
@@ -247,6 +330,7 @@ contract UnstakingShMonVault is EVCUtil, ERC4626 {
     function redeemForWmon(uint256 shares, address receiver, address owner) external returns (uint256 wmonOut) {
         address caller = _msgSender();
         if (caller != owner) _spendAllowance(owner, caller, shares);
+        claimUnstaked(owner);
         wmonOut = convertToAssets(shares).mulDiv(rate(), 1e18);
         if (wmonOut > wmonRedeemable(owner)) revert InsufficientWmon();
         // the owner's own credit first, then the shared pot's credited part; what is left comes from WMON not yet
